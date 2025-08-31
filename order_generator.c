@@ -6,18 +6,18 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <time.h> // Para la semilla del generador de números aleatorios
+#include <time.h> 
 
 #include "shared_data.h"
 
-// --- Variables Globales (solo para este proceso) ---
+// puntero a la estructura de estado compartida
 static SharedSystemState *shared_state = NULL;
 
-// --- Función Principal del Proceso Generador de Órdenes ---
+
 
 void start_order_generator_process(const char *shm_name)
 {
-    // --- 1. Conectarse a la Memoria Compartida ---
+    // --- 1. conectarse a la memoria compartida ---
     int shm_fd = shm_open(shm_name, O_RDWR, 0666);
     if (shm_fd == -1)
     {
@@ -25,86 +25,78 @@ void start_order_generator_process(const char *shm_name)
         exit(1);
     }
 
+    // mapeamos la memoria compartida a nuestro espacio de direcciones
     shared_state = mmap(NULL, sizeof(SharedSystemState), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if (shared_state == MAP_FAILED)
     {
         perror("mmap (generator)");
         exit(1);
     }
-    close(shm_fd);
+    close(shm_fd); // ya no necesitamos el descriptor
 
-    // Semilla para el generador de números aleatorios.
-    // Usamos el PID para asegurarnos de que sea único por proceso.
+    // inicializamos la semilla para el generador de numeros aleatorios
+    // usamos el pid para que cada proceso generador (si hubiera mas) tenga una semilla diferente
     srand(time(NULL) ^ getpid());
 
-    printf("[Generator, PID %d] Conectado y listo para crear órdenes.\n", getpid());
+    printf("[Generator, PID %d] Conectado y listo para crear ordenes.\n", getpid());
 
     unsigned int order_counter = 0;
 
-    // --- 2. Bucle Principal de Generación ---
+    // --- 2. bucle principal de generacion ---
     while (shared_state->system_running)
     {
-        // Simular que las órdenes llegan a intervalos variables.
-        sleep((rand() % 3) + 1); // Esperar entre 1 y 3 segundos.
+        // esperamos un tiempo aleatorio para simular la llegada de clientes
+        sleep((rand() % 3) + 1); 
 
-        // **Concepto S.O. (Silberschatz): Sincronización (Problema Productor-Consumidor)**
-        // `sem_wait` es la operación del productor antes de producir. El proceso se bloqueará
-        // aquí si la cola está llena (si el valor del semáforo de espacio es 0).
-        // Esto previene un desbordamiento del buffer (la cola).
+        // esperamos a que haya espacio disponible en la cola de ordenes
+        // si la cola esta llena, este proceso se quedara bloqueado aqui
         sem_wait(&shared_state->sem_space_available);
 
-        // Chequeo de salida por si nos despertaron para terminar.
+        // al despertar, verificamos si es porque el sistema se esta apagando
         if (!shared_state->system_running)
         {
             break;
         }
 
-        // --- Crear una nueva orden ---
+        // creamos una nueva orden
         BurgerOrder new_order;
         new_order.order_id = ++order_counter;
-
-        // --- CÓDIGO MODIFICADO PARA ÓRDENES SIEMPRE POSIBLES ---
-        // Todas las hamburguesas tienen pan y carne.
+        // ingredientes base que toda hamburguesa lleva
         new_order.ingredients_needed[BUN] = 2;
         new_order.ingredients_needed[PATTY] = 1;
 
-        // Añadir otros ingredientes de forma aleatoria, pero con límites razonables.
-        // Esto asegura que cada orden individual sea siempre "posible" al principio.
-        new_order.ingredients_needed[LETTUCE] = (rand() % 100 < 80) ? 1 : 0; // 80% de probabilidad de querer 1 de lechuga
-        new_order.ingredients_needed[TOMATO] = (rand() % 100 < 70) ? 1 : 0;  // 70% de probabilidad de querer 1 de tomate
-        new_order.ingredients_needed[ONION] = (rand() % 100 < 60) ? 1 : 0;   // 60% de probabilidad de querer 1 de cebolla
-        new_order.ingredients_needed[CHEESE] = (rand() % 100 < 90) ? 1 : 0;  // 90% de probabilidad de querer 1 de queso
+        // ingredientes opcionales, se anaden con cierta probabilidad
+        new_order.ingredients_needed[LETTUCE] = (rand() % 100 < 80) ? 1 : 0; 
+        new_order.ingredients_needed[TOMATO] = (rand() % 100 < 70) ? 1 : 0; 
+        new_order.ingredients_needed[ONION] = (rand() % 100 < 60) ? 1 : 0;  
+        new_order.ingredients_needed[CHEESE] = (rand() % 100 < 90) ? 1 : 0;  
 
-        // Aseguramos que los demás ingredientes (no usados en esta lógica simple) se pidan en cantidad 0.
+        // nos aseguramos de que los demas ingredientes esten en cero
         for (int i = CHEESE + 1; i < MAX_INGREDIENTS; i++)
         {
             new_order.ingredients_needed[i] = 0;
         }
-        // --- FIN DEL CÓDIGO MODIFICADO ---
-
-        // **Concepto S.O. (Silberschatz): Sección Crítica**
-        // Bloqueamos el mutex para manipular la estructura de la cola de forma segura.
+    
+        // bloqueamos el mutex para poder modificar la cola de ordenes de forma segura
         pthread_mutex_lock(&shared_state->waiting_orders.mutex);
 
-        // Añadir la orden a la cola en la posición `tail`.
+        // anadimos la nueva orden al final de la cola (en la posicion 'tail')
         int tail_pos = shared_state->waiting_orders.tail;
         shared_state->waiting_orders.orders[tail_pos] = new_order;
+        // movemos el puntero 'tail' a la siguiente posicion, de forma circular
         shared_state->waiting_orders.tail = (tail_pos + 1) % MAX_ORDERS_IN_QUEUE;
         shared_state->waiting_orders.count++;
 
         printf("[Generator] Nueva orden #%u creada. Total en cola: %d\n", new_order.order_id, shared_state->waiting_orders.count);
 
-        // Liberamos el mutex.
+        // liberamos el mutex para que otros procesos puedan acceder a la cola
         pthread_mutex_unlock(&shared_state->waiting_orders.mutex);
 
-        // **Concepto S.O. (Silberschatz): Señalización**
-        // Ahora que hemos añadido una orden, debemos notificar a los consumidores (bandas).
-        // `sem_post` incrementa el contador de `sem_orders_available`. Si alguna banda
-        // estaba dormida en `sem_wait`, esta llamada la despertará.
+        // incrementamos el semaforo de ordenes disponibles para 'despertar' a una banda
         sem_post(&shared_state->sem_orders_available);
     }
 
-    // --- 3. Limpieza ---
     printf("[Generator, PID %d] Terminando...\n", getpid());
+    // liberamos la memoria mapeada antes de salir
     munmap(shared_state, sizeof(SharedSystemState));
 }

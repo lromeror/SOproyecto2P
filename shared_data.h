@@ -3,97 +3,91 @@
 #ifndef SHARED_DATA_H
 #define SHARED_DATA_H
 
-#include <pthread.h> // Para mutex y variables de condición
-#include <semaphore.h> // Para semáforos
-#include <stdbool.h> // Para usar bool, true, false
+#include <pthread.h> // para mutex y variables de condicion
+#include <semaphore.h> 
+#include <stdbool.h> 
 
-// --- Constantes Configurables ---
-#define MAX_BELTS 20         // Máximo número de bandas soportadas
-#define MAX_INGREDIENTS 10   // Máximo tipo de ingredientes
-#define MAX_ORDERS_IN_QUEUE 50 // Tamaño máximo de la cola de espera FIFO
+// -- constantes de configuracion del sistema --
+#define MAX_BELTS 20        // numero maximo de bandas que podemos crear
+#define MAX_INGREDIENTS 10  // maximo de tipos de ingredientes distintos
+#define MAX_ORDERS_IN_QUEUE 50 // tamano del buffer de ordenes en espera
 
-// --- Enumeraciones para claridad ---
-// Posibles estados de una banda de preparación
+
+// enumeracion para los posibles estados de una banda
 typedef enum {
-    IDLE,      // Esperando una orden
-    PREPARING, // Preparando una hamburguesa
-    PAUSED,    // Pausada por el usuario
-    NO_INGREDIENTS // No pudo tomar una orden por falta de ingredientes
+    IDLE,      // esperando por una orden
+    PREPARING, // preparando activamente una hamburguesa
+    PAUSED,    // pausada por el usuario
+    NO_INGREDIENTS // esperando por falta de ingredientes
 } BeltStatus;
 
-// Nombres de los ingredientes para fácil referencia
+// enumeracion para identificar los ingredientes por un indice
 typedef enum {
-    BUN,       // Pan
-    PATTY,     // Carne
-    LETTUCE,   // Lechuga
-    TOMATO,    // Tomate
-    ONION,     // Cebolla
-    CHEESE,    // Queso
-    // Se pueden añadir más si es necesario
+    BUN,       // pan
+    PATTY,     // carne
+    LETTUCE,   // lechuga
+    TOMATO,    // tomate
+    ONION,     // cebolla
+    CHEESE,    // queso
+
 } IngredientType;
 
-// --- Estructuras de Datos ---
-
-// Representa una orden de hamburguesa
+// estructura que representa una sola orden de hamburguesa
 typedef struct {
-    unsigned int order_id;
-    // Un array que indica cuántas unidades de cada ingrediente se necesita.
-    // Ejemplo: ingredients_needed[TOMATO] = 2; significa 2 rodajas de tomate.
+    unsigned int order_id; // identificador unico de la orden
+
+    // array que indica cuantos de cada ingrediente se necesita
     int ingredients_needed[MAX_INGREDIENTS];
 } BurgerOrder;
 
-// Representa el estado de un solo dispensador de ingrediente
+// estructura para manejar cada tipo de ingrediente
 typedef struct {
     char name[20];
-    int count; // Cantidad disponible
-    pthread_mutex_t mutex; // ¡CRUCIAL! Un mutex por ingrediente para granularidad fina.
-                           // Evita que todas las bandas se bloqueen si solo una va a por tomates.
+    int count; // cantidad disponible
+    pthread_mutex_t mutex; // mutex para proteger el acceso a 'count'
 } Ingredient;
 
-// Representa el estado de una banda de preparación
+
+// estructura que representa el estado de una banda de preparacion
 typedef struct {
-    pid_t pid; // PID del proceso que la controla, para poder enviarle señales
-    BeltStatus status;
-    unsigned int burgers_processed;
-    unsigned int current_order_id; // ID de la orden que está procesando
-    bool running; // Para indicar al proceso si debe terminar
+    pid_t pid; // process id de la banda
+    BeltStatus status; // el estado actual (idle, preparing, etc)
+    unsigned int burgers_processed; // contador de hamburguesas completadas
+    unsigned int current_order_id; // id de la orden que esta procesando
+    bool running; // bandera de control (actualmente no usada, se usa system_running)
 } PreparationBelt;
 
-// Estructura para la cola de órdenes en espera (implementación FIFO simple)
+// estructura para la cola circular de ordenes pendientes
 typedef struct {
     BurgerOrder orders[MAX_ORDERS_IN_QUEUE];
-    int head; // Puntero al primer elemento
-    int tail; // Puntero a la última posición libre
-    int count; // Número de elementos en la cola
-    pthread_mutex_t mutex; // Mutex para proteger el acceso a la cola
+    int head; // indice del proximo elemento a ser consumido
+    int tail; // indice donde se insertara el proximo elemento
+    int count; // numero actual de elementos en la cola
+    pthread_mutex_t mutex; // mutex para proteger toda la cola
 } OrderQueue;
 
 
-// --- La Estructura Principal de Memoria Compartida ---
-// Contiene todo el estado del sistema.
+// -- la estructura principal que se almacena en memoria compartida --
+// contiene todo el estado del sistema
 typedef struct {
-    // --- Estado del Sistema ---
-    bool system_running; // Para indicar a todos los procesos que terminen
-    Ingredient ingredients[MAX_INGREDIENTS];
-    PreparationBelt belts[MAX_BELTS];
-    int num_belts; // Número de bandas activas, definido por línea de comando
 
-    // --- Cola de Órdenes (Problema Productor-Consumidor) ---
-    OrderQueue waiting_orders;
+    bool system_running; // bandera global para indicar a los procesos que deben terminar
+    Ingredient ingredients[MAX_INGREDIENTS]; // inventario de ingredientes
+    PreparationBelt belts[MAX_BELTS]; // array con el estado de todas las bandas
+    int num_belts; // numero de bandas activas
+    OrderQueue waiting_orders; // la cola de ordenes pendientes
 
-    // --- Primitivas de Sincronización ---
-    // Semáforo que cuenta el número de órdenes en la cola `waiting_orders`.
-    // Las bandas (consumidores) harán `sem_wait` aquí.
+
+    // semaforo que cuenta cuantas ordenes hay disponibles para procesar
     sem_t sem_orders_available;
 
-    // Semáforo que cuenta los espacios libres en la cola.
-    // El generador (productor) hará `sem_wait` aquí para no desbordar la cola.
+    // semaforo que cuenta cuantos espacios libres hay en la cola de ordenes
     sem_t sem_space_available;
 
 } SharedSystemState;
 
 
-// Nombre del objeto de memoria compartida. Será como un "archivo" en /dev/shm/
+// nombre del objeto de memoria compartida
 #define SHM_NAME "/burger_machine_shm"
 
 #endif // SHARED_DATA_H

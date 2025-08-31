@@ -1,31 +1,32 @@
 // File: ui_control_process.c
 
-#include <ncurses.h> // La biblioteca para la TUI
+#include <ncurses.h> 
 #include <unistd.h>
 #include <sys/mman.h>
 #include <fcntl.h>
-#include <signal.h> // Para kill()
-#include <string.h>   // <--- AÑADIR ESTA LÍNEA
-#include <stdlib.h>   // <--- AÑADIR ESTA LÍNEA
+#include <signal.h> 
+#include <string.h>   
+#include <stdlib.h>   
 
 #include "shared_data.h"
 
-// --- Variables Globales (solo para este proceso) ---
+// puntero a la memoria compartida
 static SharedSystemState *shared_state = NULL;
 
-// --- Funciones de Dibujo ---
 
+// funcion para dibujar la ventana principal con toda la informacion
 void draw_status_window(WINDOW *win) {
-    wclear(win); // Limpia la ventana antes de redibujar
-    box(win, 0, 0); // Dibuja un borde alrededor
+    wclear(win); // limpiamos la ventana antes de dibujar
+    box(win, 0, 0); // le ponemos un borde
 
     mvwprintw(win, 1, 2, "ESTADO DEL SISTEMA DE HAMBURGUESAS");
     
-    // --- Estado de las Bandas ---
+    // --- estado de las bandas ---
     mvwprintw(win, 3, 2, "Banda | PID     | Estado          | Hamburguesas Procesadas");
     mvwprintw(win, 4, 2, "------+---------+-----------------+--------------------------");
     for (int i = 0; i < shared_state->num_belts; i++) {
         char status_str[20];
+        // convertimos el enum de estado a un string para mostrarlo
         switch (shared_state->belts[i].status) {
             case IDLE: strcpy(status_str, "Esperando"); break;
             case PREPARING: strcpy(status_str, "Preparando"); break;
@@ -40,11 +41,11 @@ void draw_status_window(WINDOW *win) {
                   shared_state->belts[i].burgers_processed);
     }
 
-    // --- Estado de la Cola de Órdenes ---
+    // --- estado de la cola de ordenes ---
     int queue_y_pos = 5 + shared_state->num_belts + 2;
-    mvwprintw(win, queue_y_pos, 2, "COLA DE ÓRDENES: %d/%d", shared_state->waiting_orders.count, MAX_ORDERS_IN_QUEUE);
+    mvwprintw(win, queue_y_pos, 2, "COLA DE ORDENES: %d/%d", shared_state->waiting_orders.count, MAX_ORDERS_IN_QUEUE);
 
-    // --- Inventario ---
+    // --- inventario ---
     int inv_y_pos = queue_y_pos + 2;
     mvwprintw(win, inv_y_pos, 2, "INVENTARIO DE INGREDIENTES:");
     for (int i = 0; i < MAX_INGREDIENTS; i++) {
@@ -53,9 +54,10 @@ void draw_status_window(WINDOW *win) {
         }
     }
 
-    wrefresh(win); // Actualiza la pantalla con lo que dibujamos
+    wrefresh(win); // actualiza la pantalla con todo lo que dibujamos
 }
 
+// funcion para dibujar la ventana de abajo con los controles
 void draw_control_window(WINDOW *win) {
     wclear(win);
     box(win, 0, 0);
@@ -63,70 +65,71 @@ void draw_control_window(WINDOW *win) {
     wrefresh(win);
 }
 
-// --- Función Principal de la UI y Control ---
+
 void start_ui_control_process(const char* shm_name) {
-    // --- 1. Conexión a Memoria Compartida ---
+
     int shm_fd = shm_open(shm_name, O_RDWR, 0666);
-    if (shm_fd == -1) { /* ... manejo de error ... */ exit(1); }
+    if (shm_fd == -1) {  exit(1); }
     shared_state = mmap(NULL, sizeof(SharedSystemState), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if (shared_state == MAP_FAILED) { /* ... manejo de error ... */ exit(1); }
     close(shm_fd);
 
-    // --- 2. Inicialización de ncurses ---
-    initscr();             // Iniciar modo ncurses
-    cbreak();              // Deshabilitar buffer de línea
-    noecho();              // No mostrar las teclas presionadas
-    curs_set(0);           // Ocultar el cursor
-    timeout(100);          // Hacer que getch() no sea bloqueante (espera 100ms)
 
-    // Crear las ventanas
+    initscr();             // iniciar modo ncurses
+    cbreak();              // deshabilitar buffer de linea, para leer tecla por tecla
+    noecho();              // no mostrar las teclas que el usuario presiona
+    curs_set(0);           // ocultar el cursor
+    timeout(100);         
+
+    // creamos las dos ventanas que vamos a usar
     int height, width;
     getmaxyx(stdscr, height, width);
     WINDOW *status_win = newwin(height - 3, width, 0, 0);
     WINDOW *control_win = newwin(3, width, height - 3, 0);
 
-    // --- 3. Bucle Principal ---
+    // bucle principal de la interfaz
     while (shared_state->system_running) {
+        // redibujamos las ventanas en cada ciclo para que la info este fresca
         draw_status_window(status_win);
         draw_control_window(control_win);
 
-        // --- 4. Manejo de Entrada ---
-        int ch = getch(); // Lee una tecla (o devuelve ERR si pasa el timeout)
+        // esperamos por una tecla del usuario
+        int ch = getch(); 
 
+        // logica para pausar o reanudar una banda
         if (ch == 'p' || ch == 'P' || ch == 'r' || ch == 'R') {
-            echo(); // Activar echo para que el usuario vea lo que escribe
+            echo(); // activamos el echo temporalmente para ver lo que escribimos
             mvwprintw(control_win, 1, 55, "ID de la banda?: ");
             wrefresh(control_win);
             
             char str[4];
-            wgetnstr(control_win, str, 3); // Leer hasta 3 caracteres
+            wgetnstr(control_win, str, 3); // leemos el numero que introduce el usuario
             int belt_id_input = atoi(str);
 
-            noecho(); // Desactivar echo de nuevo
+            noecho(); // desactivamos el echo de nuevo
 
-            // Validar entrada
+            // verificamos que el id de la banda sea valido
             if (belt_id_input >= 0 && belt_id_input < shared_state->num_belts) {
                 pid_t target_pid = shared_state->belts[belt_id_input].pid;
                 if (ch == 'p' || ch == 'P') {
-                    // **Concepto S.O. (Silberschatz): Manejo de Procesos y Señales**
-                    // Enviamos la señal SIGSTOP para pausar el proceso incondicionalmente.
+                    // enviamos la senal sigstop para pausar el proceso de la banda
                     if (kill(target_pid, SIGSTOP) == 0) {
+                        // si la senal se envio bien, actualizamos el estado para que se refleje
                         shared_state->belts[belt_id_input].status = PAUSED;
                     }
                 } else if (ch == 'r' || ch == 'R') {
-                    // Enviamos la señal SIGCONT para reanudar un proceso pausado.
+                    // enviamos la senal sigcont para reanudar un proceso pausado
                     if (kill(target_pid, SIGCONT) == 0) {
-                        shared_state->belts[belt_id_input].status = IDLE; // Volver a estado idle
+                        shared_state->belts[belt_id_input].status = IDLE; // la ponemos en idle
                     }
                 }
             }
         }
     }
 
-    // --- 5. Limpieza ---
     delwin(status_win);
     delwin(control_win);
-    endwin(); // Restaurar la terminal a su estado original
+    endwin(); 
 
     printf("[UI/Control] Terminando...\n");
     munmap(shared_state, sizeof(SharedSystemState));
