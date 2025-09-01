@@ -21,7 +21,6 @@ void draw_status_window(WINDOW *win) {
 
     mvwprintw(win, 1, 2, "ESTADO DEL SISTEMA DE HAMBURGUESAS");
     
-    // --- estado de las bandas ---
     mvwprintw(win, 3, 2, "Banda | PID     | Estado          | Hamburguesas Procesadas");
     mvwprintw(win, 4, 2, "------+---------+-----------------+--------------------------");
     for (int i = 0; i < shared_state->num_belts; i++) {
